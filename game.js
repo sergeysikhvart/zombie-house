@@ -110,6 +110,8 @@ const ITEMS = {
   gas:      { name: "Канистра",        icon: "⛽", kind: "goal"    },
 };
 const AURA = ["katana", "shotgun"]; // оружие, убивающее по ауре (авто-килл, не тратится)
+const INV_MAX = 4;                  // у игрока всего 4 места под предметы
+const FLASH_MS = 5000;             // подобранная карта видна на полу ещё 5 сек
 
 // ---------- Герои ----------
 const HEAL_MAX = 5; // лечиться можно до 5
@@ -197,7 +199,7 @@ function placeCards() {
     cards.push(deck[i]);
   }
 }
-function cardAt(r, c) { return cards.find(z => z.r === r && z.c === c && !(z.kind === "zombie" && z.dead)) || null; }
+function cardAt(r, c) { return cards.find(z => z.r === r && z.c === c && !z.taken && !(z.kind === "zombie" && z.dead)) || null; }
 
 // ---------- Вертушка: 4 сектора, по 1 ----------
 const WHEEL = ["skull", "run", "firearm", "melee"];
@@ -411,15 +413,21 @@ function startCombat(p, z) {
 
 function pickUp(p, card) {
   const id = card.item, def = ITEMS[id];
-  cards = cards.filter(x => x !== card);
   if (def.kind === "goal") {
     if (id === "keys") team.keys = true;
     if (id === "gas") team.gas = true;
+    card.taken = true; card.takenAt = performance.now(); // мелькнёт 5 сек и исчезнет
     log = `${p.name} нашёл ${def.icon} ${def.name}!`;
-  } else {
-    p.items.push(id);
-    log = `${p.name} подобрал ${def.icon} ${def.name}.`;
+    return;
   }
+  if (p.items.length >= INV_MAX) {            // мест нет — предмет остаётся на полу (вскрыт)
+    card.revealed = true;
+    log = `${p.name}: нет места (4/4)! ${def.icon} ${def.name} остаётся на полу.`;
+    return;
+  }
+  p.items.push(id);
+  card.taken = true; card.takenAt = performance.now();
+  log = `${p.name} подобрал ${def.icon} ${def.name}.`;
 }
 
 function arrive(p) {
@@ -505,6 +513,9 @@ window.addEventListener("keydown", (e) => {
 let last = performance.now();
 function update(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  // подобранные карты убираются с поля через 5 сек
+  if (cards.some(c => c.taken && now - c.takenAt > FLASH_MS))
+    cards = cards.filter(c => !(c.taken && now - c.takenAt > FLASH_MS));
   const p = active();
   if (state === "PLAY" && p && p.path) {
     p.moveT += dt * 6;
@@ -588,6 +599,14 @@ function drawCards() {
       ctx.font = `${cell*.5}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(def.emoji, x + cell/2, y + cell/2);
       if (z.immobilized) { ctx.font = `${cell*.4}px serif`; ctx.fillText("🪢", x + cell*.78, y + cell*.78); }
+    } else { // вскрытый предмет: лежит на полу или мелькает 5 сек после подбора
+      const def = ITEMS[z.item];
+      if (z.taken) ctx.globalAlpha = Math.max(.15, 1 - (performance.now() - z.takenAt) / FLASH_MS);
+      ctx.fillStyle = "#243524"; roundRect(x + cell*.1, y + cell*.1, cell*.8, cell*.8, 4); ctx.fill();
+      ctx.strokeStyle = "#6a8a4a"; ctx.lineWidth = 2; ctx.stroke();
+      ctx.font = `${cell*.5}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(def.icon, x + cell/2, y + cell/2);
+      ctx.globalAlpha = 1;
     }
   }
 }

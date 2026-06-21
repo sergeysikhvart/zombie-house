@@ -324,6 +324,7 @@ function resolveCombat(sym) {
   }
   if (sym === "run") {
     if (p.prevR != null) { p.r = p.prevR; p.c = p.prevC; p.px = p.c; p.py = p.r; }
+    if (z) z.skipNext = true; // зомби не преследует сразу — даём отбежать без укуса
     spin.message = `🏃 Побег! ${p.name} отступает. Зомби остаётся.`;
     spin.combatEnd = true; return;
   }
@@ -373,14 +374,6 @@ function useSpecial(itemId) {
     if (p.prevR != null) { p.r = p.prevR; p.c = p.prevC; p.px = p.c; p.py = p.r; }
     autoResult(z, `🪢 Лассо! ${zd.name} обездвижен.`, true);
   }
-}
-
-// побег из боя без вертушки (отступаем на клетку, откуда пришли)
-function fleeCombat() {
-  if (!spin || spin.mode !== "combat") return;
-  const p = active(), z = spin.zombie;
-  if (p.prevR != null) { p.r = p.prevR; p.c = p.prevC; p.px = p.c; p.py = p.r; }
-  autoResult(z, `🏃 ${p.name} отступает. Зомби остаётся на месте.`, true);
 }
 
 function damage(p, n) {
@@ -475,6 +468,7 @@ function moveZombies() {
   const base = STEPS[WHEEL[(Math.random() * WHEEL.length) | 0]]; // общий бросок шагов
   for (const z of cards) {
     if (z.kind !== "zombie" || z.dead || !z.revealed || z.immobilized) continue;
+    if (z.skipNext) { z.skipNext = false; continue; } // отдых после побега игрока
     let steps = base + (ZTYPES[z.ztype].moveMod || 0);
     if (steps < 1) steps = 1;
     const tgt = nearestPlayer(z);
@@ -780,16 +774,13 @@ function drawSpinner() {
   if (!spin.done) ctx.fillText(spin.spinning ? "..." : "КРУТИТЬ", cx, cy);
   if (!spin.spinning && !spin.done)
     addButton(cx - R*.22, cy - R*.22, R*.44, R*.44, "", () => { spin.spinning = true; spin.t = 0; }, null);
-  // спецсредства + побег на выбор в бою
+  // спецсредства на выбор в бою (дротик / лассо)
   if (spin.mode === "combat" && !spin.spinning && !spin.done) {
     const p = active();
-    const opts = [];
-    for (const sp of ["dart","lasso"]) if (p.items.includes(sp)) opts.push(["item", sp]);
-    opts.push(["flee", null]);
-    let bw = 140, gap = 10, bx = cx - (opts.length * bw + (opts.length-1) * gap) / 2;
-    for (const [t, sp] of opts) {
-      if (t === "item") addButton(bx, cy + R + 6, bw, 28, `${ITEMS[sp].icon} ${ITEMS[sp].name}`, () => useSpecial(sp), "#8a5a2a");
-      else addButton(bx, cy + R + 6, bw, 28, "🏃 Сбежать", fleeCombat, "#3a6b78");
+    const opts = ["dart","lasso"].filter(sp => p.items.includes(sp));
+    let bw = 140, gap = 10, bx = cx - (opts.length * bw + Math.max(0, opts.length-1) * gap) / 2;
+    for (const sp of opts) {
+      addButton(bx, cy + R + 6, bw, 28, `${ITEMS[sp].icon} ${ITEMS[sp].name}`, () => useSpecial(sp), "#8a5a2a");
       bx += bw + gap;
     }
   }
@@ -799,13 +790,12 @@ function drawSpinner() {
     ctx.strokeStyle = "#5a6b78"; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = "#e8eef2"; ctx.font = "14px sans-serif"; wrapText(spin.message, cx, cy+R+30, 400, 18);
     if (spin.awaitWeapon) {
-      // выбор оружия (несколько подходящих) + возможность сбежать
-      const all = [...spin.awaitWeapon, "__flee"];
+      // выбор оружия (несколько подходящих)
+      const all = spin.awaitWeapon;
       const bw = 132, gap = 8;
       let bx = cx - (all.length * bw + (all.length - 1) * gap) / 2;
       for (const it of all) {
-        if (it === "__flee") addButton(bx, cy+R+74, bw, 32, "🏃 Сбежать", fleeCombat, "#3a6b78");
-        else addButton(bx, cy+R+74, bw, 32, `${ITEMS[it].icon} ${ITEMS[it].name}`, () => applyWeapon(it), "#8a5a2a");
+        addButton(bx, cy+R+74, bw, 32, `${ITEMS[it].icon} ${ITEMS[it].name}`, () => applyWeapon(it), "#8a5a2a");
         bx += bw + gap;
       }
     } else {

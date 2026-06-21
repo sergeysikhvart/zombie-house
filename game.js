@@ -110,10 +110,10 @@ function otherPlayersBlocked(selfId) {
 const ITEMS = {
   pistol:   { name: "Пистолет",        icon: "🔫", kind: "firearm" },
   musket:   { name: "Мушкет",          icon: "🔫", kind: "firearm" },
-  shotgun:  { name: "Двухстволка",     icon: "🔫", kind: "firearm" }, // нужен символ «Огнестрел»
+  shotgun:  { name: "Двухстволка",     icon: "🔫", kind: "firearm" }, // по ауре: символ «Огнестрел» → наповал
   revolver: { name: "Револьвер",       icon: "🔫", kind: "firearm" },
   machete:  { name: "Мачете",          icon: "🔪", kind: "melee"   },
-  katana:   { name: "Катана",          icon: "🗡️", kind: "melee"   }, // нужен символ «Холодное»
+  katana:   { name: "Катана",          icon: "🗡️", kind: "melee"   }, // по ауре: символ «Холодное» → наповал
   knife:    { name: "Нож",             icon: "🔪", kind: "melee"   },
   grenade:  { name: "Граната",         icon: "💣", kind: "special" }, // авто
   dart:     { name: "Ядовитый дротик", icon: "🎯", kind: "special" }, // на выбор
@@ -127,29 +127,28 @@ const ITEMS = {
 };
 const INV_MAX = 4;                  // у игрока всего 4 места под предметы
 const FLASH_MS = 5000;             // подобранная карта видна на полу ещё 5 сек
+const AURA = ["katana", "shotgun"]; // бьют «по ауре»: при нужном символе убивают наповал (не авто)
 
 // ---------- Герои ----------
-const HEAL_MAX = 5; // лечиться можно до 5
+// hp — стартовые жизни, max — потолок лечения, heal — сколько ХП даёт аптечка
 const CHAR_DEFS = [
-  { name: "Полицейский", color: "#3d7bd6", hp: 3, items: ["revolver"] },
-  { name: "Хулиганка",   color: "#c64bd0", hp: 3, items: ["machete"] },
-  { name: "Медсестра",   color: "#3fb98a", hp: 3, items: ["knife", "medkit"] },
-  { name: "Байкер",      color: "#d68a3d", hp: 3, items: ["musket"] },
+  { name: "Полицейский", color: "#3d7bd6", hp: 3, max: 5, heal: 1, items: ["pistol", "pistol"] },
+  { name: "Хулиганка",   color: "#c64bd0", hp: 3, max: 5, heal: 1, items: ["knife", "knife"] },
+  { name: "Медсестра",   color: "#3fb98a", hp: 3, max: 5, heal: 2, items: ["medkit"] },
+  { name: "Байкер",      color: "#d68a3d", hp: 5, max: 6, heal: 1, items: [] },
 ];
 let players = [];
 let playerCount = 4;
 function makePlayers(n) {
   const spots = [[10,1],[9,0],[9,1],[10,2]];
   players = CHAR_DEFS.slice(0, n).map((d, i) => ({
-    id: i, name: d.name, color: d.color, hp: d.hp, maxHp: HEAL_MAX,
+    id: i, name: d.name, color: d.color, hp: d.hp, maxHp: d.max, heal: d.heal,
     items: d.items.slice(),
     r: spots[i][0], c: spots[i][1], px: spots[i][1], py: spots[i][0],
     path: null, step: 0, moveT: 0, prevR: null, prevC: null,
     movedThisTurn: false, alive: true, escaped: false,
   }));
 }
-const hasKind = (p, kind) => p.items.some(it => ITEMS[it].kind === kind);
-const firstOfKind = (p, kind) => p.items.find(it => ITEMS[it].kind === kind);
 function removeItem(p, id) { const i = p.items.indexOf(id); if (i >= 0) p.items.splice(i, 1); }
 
 // ---------- Зомби ----------
@@ -334,18 +333,29 @@ function resolveCombat(sym) {
     return;
   }
   const need = sym; // 'firearm' | 'melee'
-  if (hasKind(p, need)) {
-    const w = firstOfKind(p, need);
-    removeItem(p, w); // любое оружие одноразовое
-    damageZombie(z);
-    let msg = `${SECTOR[sym].icon} ${ITEMS[w].name}: ${zd.name} уничтожен! (израсходовано)`;
-    if (!z.dead) msg = `💉 ${zd.name} воскресает! Нужен ещё удар. Крути снова.`;
-    spin.message = msg;
-    spin.combatEnd = z.dead;
-  } else {
+  const distinct = [...new Set(p.items.filter(it => ITEMS[it].kind === need))];
+  if (distinct.length === 0) {
     // нет нужного оружия — просто промах, ХП НЕ снимается. Крути снова или беги.
-    spin.message = `${SECTOR[sym].icon} Промах — нет ${sym === "firearm" ? "огнестрела" : "холодного оружия"}. Крути снова или беги.`;
+    spin.message = `${SECTOR[sym].icon} Промах — нет ${need === "firearm" ? "огнестрела" : "холодного оружия"}. Крути снова или беги.`;
+  } else if (distinct.length === 1) {
+    applyWeapon(distinct[0]);           // одно оружие — бьём сразу
+  } else {
+    spin.awaitWeapon = distinct;        // несколько — даём выбор какое использовать
+    spin.message = `${SECTOR[sym].icon} ${SECTOR[sym].label}! Выбери, чем бить:`;
   }
+}
+
+// применить выбранное оружие к зомби. Аура (катана/двухстволка) — наповал; обычное — 1 жизнь.
+function applyWeapon(itemId) {
+  const p = active(), z = spin.zombie, zd = ZTYPES[z.ztype];
+  removeItem(p, itemId); // оружие одноразовое
+  if (AURA.includes(itemId)) killFully(z); else damageZombie(z);
+  spin.awaitWeapon = null;
+  if (!z.dead) spin.message = `💉 ${zd.name} воскресает! Нужен ещё удар. Крути снова.`;
+  else if (AURA.includes(itemId)) spin.message = `${ITEMS[itemId].icon} ${ITEMS[itemId].name} бьёт по ауре: ${zd.name} уничтожен! (израсходовано)`;
+  else spin.message = `${ITEMS[itemId].icon} ${ITEMS[itemId].name}: ${zd.name} уничтожен! (израсходовано)`;
+  spin.combatEnd = z.dead;
+  spin.done = true;
 }
 
 function damageZombie(z) { z.lives -= 1; if (z.lives <= 0) z.dead = true; }
@@ -718,7 +728,7 @@ function drawInventory() {
     const d = ITEMS[it];
     ctx.fillStyle = "#e8eef2"; ctx.fillText(`${d.icon}  ${d.name}`, x+24, yy);
     let label = null, act = null;
-    if (d.kind === "heal" && p.hp < p.maxHp) { label = "Лечить"; act = () => { p.hp = Math.min(p.maxHp, p.hp+1); removeItem(p, it); }; }
+    if (d.kind === "heal" && p.hp < p.maxHp) { label = `Лечить +${p.heal}`; act = () => { p.hp = Math.min(p.maxHp, p.hp + p.heal); removeItem(p, it); }; }
     else if (it === "energy" && inMove)   { label = "+1 ход";     act = () => { useEnergy(); showInv = false; }; }
     else if (it === "lasso" && inCombat)  { label = "Накинуть";   act = () => { useSpecial("lasso"); showInv = false; }; }
     else if (it === "dart"  && inCombat)  { label = "Метнуть";    act = () => { useSpecial("dart");  showInv = false; }; }
@@ -788,7 +798,19 @@ function drawSpinner() {
     ctx.fillStyle = "#1b2630"; roundRect(cx-210, cy+R+6, 420, 56, 8); ctx.fill();
     ctx.strokeStyle = "#5a6b78"; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = "#e8eef2"; ctx.font = "14px sans-serif"; wrapText(spin.message, cx, cy+R+30, 400, 18);
-    addButton(cx-60, cy+R+74, 120, 32, "Продолжить", afterSpin, "#3fb98a");
+    if (spin.awaitWeapon) {
+      // выбор оружия (несколько подходящих) + возможность сбежать
+      const all = [...spin.awaitWeapon, "__flee"];
+      const bw = 132, gap = 8;
+      let bx = cx - (all.length * bw + (all.length - 1) * gap) / 2;
+      for (const it of all) {
+        if (it === "__flee") addButton(bx, cy+R+74, bw, 32, "🏃 Сбежать", fleeCombat, "#3a6b78");
+        else addButton(bx, cy+R+74, bw, 32, `${ITEMS[it].icon} ${ITEMS[it].name}`, () => applyWeapon(it), "#8a5a2a");
+        bx += bw + gap;
+      }
+    } else {
+      addButton(cx-60, cy+R+74, 120, 32, "Продолжить", afterSpin, "#3fb98a");
+    }
   }
 }
 

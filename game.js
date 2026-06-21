@@ -39,7 +39,23 @@ function buildMap() {
 }
 function isWalkable(r, c) {
   if (r < 0 || c < 0 || r >= ROWS || c >= COLS) return false;
-  return grid[r][c] !== "#";
+  return grid[r][c] !== "#" && grid[r][c] !== "B"; // B — заколоченная дверь
+}
+function adjacentDoorCell(p) {
+  for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+    const r = p.r + dr, c = p.c + dc;
+    if (r >= 0 && c >= 0 && r < ROWS && c < COLS && grid[r][c] === "D") return [r, c];
+  }
+  return null;
+}
+function useBoards() {
+  const p = active();
+  if (!p.items.includes("boards")) return;
+  const d = adjacentDoorCell(p);
+  if (!d) { log = "Рядом нет двери, чтобы заколотить."; return; }
+  grid[d[0]][d[1]] = "B"; removeItem(p, "boards");
+  if (reachSet) reachSet = reachable(p.r, p.c, pendingSteps, otherPlayersBlocked(p.id));
+  log = `🪵 ${p.name} заколотил дверь — зомби не пройдут.`;
 }
 
 // ---------- Поиск пути / достижимость (BFS) ----------
@@ -398,8 +414,9 @@ function startCombat(p, z) {
   // оружие по ауре — авто-килл (не тратится), кроме медведя
   if (z.ztype !== "bear" && hasAura(p)) {
     const w = p.items.find(it => AURA.includes(it));
+    removeItem(p, w); // оружие по ауре — одноразовое
     killFully(z);
-    autoResult(z, `${ITEMS[w].icon} ${ITEMS[w].name} разит по ауре: ${zd.name} уничтожен!`, true);
+    autoResult(z, `${ITEMS[w].icon} ${ITEMS[w].name} разит по ауре: ${zd.name} уничтожен! (израсходовано)`, true);
     return;
   }
   // граната — срабатывает автоматически, кроме медведя
@@ -549,8 +566,8 @@ function draw() {
   if (state === "MENU") { drawMenu(); return; }
   drawBoard(); drawCards(); drawPlayers(); drawHUD(); drawLog();
   if (phase === "move" && reachSet) { drawReach(); drawMoveControls(); }
-  if (showInv) drawInventory();
   if (spin) drawSpinner();
+  if (showInv) drawInventory();
   if (state === "WIN") drawEnd("ПОБЕДА!", "Выжившие уехали на машине 🚗💨", "#3fb98a");
   if (state === "LOSE") drawEnd("ПОРАЖЕНИЕ", "Все герои пали 🧟", "#c0392b");
 }
@@ -561,12 +578,15 @@ function drawBoard() {
     let col = "#2f6b3a";
     if (t === ".") col = "#caa56a"; else if (t === "#") col = "#5a4634";
     else if (t === "D") col = "#9c7b3e"; else if (t === "S") col = "#d8c24a";
-    else if (t === "F") col = "#e8eef2";
+    else if (t === "F") col = "#e8eef2"; else if (t === "B") col = "#6e4a22";
     ctx.fillStyle = col; ctx.fillRect(x, y, cell, cell);
     ctx.strokeStyle = "rgba(0,0,0,.12)"; ctx.strokeRect(x + .5, y + .5, cell - 1, cell - 1);
     if (t === "S" || t === "F") {
       ctx.font = `${cell * .6}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText("🚗", x + cell / 2, y + cell / 2);
+    } else if (t === "B") {
+      ctx.font = `${cell * .55}px serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("🪵", x + cell / 2, y + cell / 2);
     }
   }
 }
@@ -580,8 +600,11 @@ function drawReach() {
 }
 function drawMoveControls() {
   const p = active();
-  if (!p.path && p.items.includes("energy"))
+  if (p.path) return;
+  if (p.items.includes("energy"))
     addButton(8, canvas.height - 70, 120, 28, "⚡ +1 ход", useEnergy, "#caa520");
+  if (p.items.includes("boards") && adjacentDoorCell(p))
+    addButton(134, canvas.height - 70, 134, 28, "🪵 Заколотить", useBoards, "#8a6a3a");
 }
 function drawCards() {
   for (const z of cards) {
@@ -666,11 +689,18 @@ function drawInventory() {
   ctx.font = "14px sans-serif"; ctx.textAlign = "left";
   let yy = y+58;
   if (!p.items.length) ctx.fillText("(пусто)", x+24, yy);
+  const inCombat = spin && spin.mode === "combat" && !spin.done && !spin.auto;
+  const inMove = phase === "move" && reachSet && !p.path;
   p.items.forEach(it => {
     const d = ITEMS[it];
     ctx.fillStyle = "#e8eef2"; ctx.fillText(`${d.icon}  ${d.name}`, x+24, yy);
-    if (d.kind === "heal" && p.hp < p.maxHp)
-      addButton(x+w-92, yy-15, 72, 22, "Лечить", () => { p.hp=Math.min(p.maxHp,p.hp+1); removeItem(p,it); }, "#3fb98a");
+    let label = null, act = null;
+    if (d.kind === "heal" && p.hp < p.maxHp) { label = "Лечить"; act = () => { p.hp = Math.min(p.maxHp, p.hp+1); removeItem(p, it); }; }
+    else if (it === "energy" && inMove)   { label = "+1 ход";     act = () => { useEnergy(); showInv = false; }; }
+    else if (it === "lasso" && inCombat)  { label = "Накинуть";   act = () => { useSpecial("lasso"); showInv = false; }; }
+    else if (it === "dart"  && inCombat)  { label = "Метнуть";    act = () => { useSpecial("dart");  showInv = false; }; }
+    else if (it === "boards" && adjacentDoorCell(p)) { label = "Заколотить"; act = () => { useBoards(); showInv = false; }; }
+    if (label) addButton(x+w-100, yy-15, 84, 22, label, act, "#3fb98a");
     yy += 28;
   });
   addButton(x+w/2-50, y+h-42, 100, 30, "Закрыть", () => { showInv = false; });

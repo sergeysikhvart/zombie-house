@@ -110,10 +110,10 @@ function otherPlayersBlocked(selfId) {
 const ITEMS = {
   pistol:   { name: "Пистолет",        icon: "🔫", kind: "firearm" },
   musket:   { name: "Мушкет",          icon: "🔫", kind: "firearm" },
-  shotgun:  { name: "Двухстволка",     icon: "🔫", kind: "firearm" }, // бьёт по ауре
+  shotgun:  { name: "Двухстволка",     icon: "🔫", kind: "firearm" }, // нужен символ «Огнестрел»
   revolver: { name: "Револьвер",       icon: "🔫", kind: "firearm" },
   machete:  { name: "Мачете",          icon: "🔪", kind: "melee"   },
-  katana:   { name: "Катана",          icon: "🗡️", kind: "melee"   }, // бьёт по ауре
+  katana:   { name: "Катана",          icon: "🗡️", kind: "melee"   }, // нужен символ «Холодное»
   knife:    { name: "Нож",             icon: "🔪", kind: "melee"   },
   grenade:  { name: "Граната",         icon: "💣", kind: "special" }, // авто
   dart:     { name: "Ядовитый дротик", icon: "🎯", kind: "special" }, // на выбор
@@ -125,7 +125,6 @@ const ITEMS = {
   keys:     { name: "Ключи",           icon: "🔑", kind: "goal"    },
   gas:      { name: "Канистра",        icon: "⛽", kind: "goal"    },
 };
-const AURA = ["katana", "shotgun"]; // оружие, убивающее по ауре (авто-килл, не тратится)
 const INV_MAX = 4;                  // у игрока всего 4 места под предметы
 const FLASH_MS = 5000;             // подобранная карта видна на полу ещё 5 сек
 
@@ -151,7 +150,6 @@ function makePlayers(n) {
 }
 const hasKind = (p, kind) => p.items.some(it => ITEMS[it].kind === kind);
 const firstOfKind = (p, kind) => p.items.find(it => ITEMS[it].kind === kind);
-const hasAura = (p) => p.items.some(it => AURA.includes(it));
 function removeItem(p, id) { const i = p.items.indexOf(id); if (i >= 0) p.items.splice(i, 1); }
 
 // ---------- Зомби ----------
@@ -237,9 +235,11 @@ let pendingSteps = 0;
 let reachSet = null;
 let team = { keys: false, gas: false };
 let log = "";
+let toast = null;              // всплывающее уведомление {msg, color, until}
 let cell = 32, ox = 0, oy = 0, buttons = [], showInv = false;
 
 const active = () => players[activeId];
+function showToast(msg, color) { toast = { msg, color: color || "#3fb98a", until: performance.now() + 2600 }; }
 
 function newGame(n) {
   playerCount = n;
@@ -336,14 +336,15 @@ function resolveCombat(sym) {
   const need = sym; // 'firearm' | 'melee'
   if (hasKind(p, need)) {
     const w = firstOfKind(p, need);
-    let msg = `${SECTOR[sym].icon} ${ITEMS[w].name}: ${zd.name} уничтожен!`;
-    if (need === "firearm") removeItem(p, w); // огнестрел тратится
+    removeItem(p, w); // любое оружие одноразовое
     damageZombie(z);
+    let msg = `${SECTOR[sym].icon} ${ITEMS[w].name}: ${zd.name} уничтожен! (израсходовано)`;
     if (!z.dead) msg = `💉 ${zd.name} воскресает! Нужен ещё удар. Крути снова.`;
     spin.message = msg;
     spin.combatEnd = z.dead;
   } else {
-    spin.message = `${SECTOR[sym].icon} Нет такого оружия! Крути снова.`;
+    // нет нужного оружия — просто промах, ХП НЕ снимается. Крути снова или беги.
+    spin.message = `${SECTOR[sym].icon} Промах — нет ${sym === "firearm" ? "огнестрела" : "холодного оружия"}. Крути снова или беги.`;
   }
 }
 
@@ -362,6 +363,14 @@ function useSpecial(itemId) {
     if (p.prevR != null) { p.r = p.prevR; p.c = p.prevC; p.px = p.c; p.py = p.r; }
     autoResult(z, `🪢 Лассо! ${zd.name} обездвижен.`, true);
   }
+}
+
+// побег из боя без вертушки (отступаем на клетку, откуда пришли)
+function fleeCombat() {
+  if (!spin || spin.mode !== "combat") return;
+  const p = active(), z = spin.zombie;
+  if (p.prevR != null) { p.r = p.prevR; p.c = p.prevC; p.px = p.c; p.py = p.r; }
+  autoResult(z, `🏃 ${p.name} отступает. Зомби остаётся на месте.`, true);
 }
 
 function damage(p, n) {
@@ -411,15 +420,7 @@ function startCombat(p, z) {
   phase = "combat";
   const zd = ZTYPES[z.ztype];
   log = `Бой: ${p.name} против ${zd.name}!`;
-  // оружие по ауре — авто-килл (не тратится), кроме медведя
-  if (z.ztype !== "bear" && hasAura(p)) {
-    const w = p.items.find(it => AURA.includes(it));
-    removeItem(p, w); // оружие по ауре — одноразовое
-    killFully(z);
-    autoResult(z, `${ITEMS[w].icon} ${ITEMS[w].name} разит по ауре: ${zd.name} уничтожен! (израсходовано)`, true);
-    return;
-  }
-  // граната — срабатывает автоматически, кроме медведя
+  // авто срабатывает ТОЛЬКО граната (кроме медведя). Катана/двухстволка — обычное оружие по символу.
   if (z.ztype !== "bear" && p.items.includes("grenade")) {
     removeItem(p, "grenade"); killFully(z);
     autoResult(z, `💣 Граната сработала автоматически: ${zd.name} уничтожен!`, true);
@@ -435,16 +436,19 @@ function pickUp(p, card) {
     if (id === "gas") team.gas = true;
     card.taken = true; card.takenAt = performance.now(); // мелькнёт 5 сек и исчезнет
     log = `${p.name} нашёл ${def.icon} ${def.name}!`;
+    showToast(`Найдено: ${def.icon} ${def.name}!`, "#d8c24a");
     return;
   }
   if (p.items.length >= INV_MAX) {            // мест нет — предмет остаётся на полу (вскрыт)
     card.revealed = true;
-    log = `${p.name}: нет места (4/4)! ${def.icon} ${def.name} остаётся на полу.`;
+    log = `${p.name}: нет места (${INV_MAX}/${INV_MAX})! ${def.icon} ${def.name} на полу.`;
+    showToast(`Нет места! ${def.icon} ${def.name} осталось на полу`, "#c0392b");
     return;
   }
   p.items.push(id);
   card.taken = true; card.takenAt = performance.now();
   log = `${p.name} подобрал ${def.icon} ${def.name}.`;
+  showToast(`Подобрано: ${def.icon} ${def.name}`, "#3fb98a");
 }
 
 function arrive(p) {
@@ -568,8 +572,22 @@ function draw() {
   if (phase === "move" && reachSet) { drawReach(); drawMoveControls(); }
   if (spin) drawSpinner();
   if (showInv) drawInventory();
+  drawToast();
   if (state === "WIN") drawEnd("ПОБЕДА!", "Выжившие уехали на машине 🚗💨", "#3fb98a");
   if (state === "LOSE") drawEnd("ПОРАЖЕНИЕ", "Все герои пали 🧟", "#c0392b");
+}
+function drawToast() {
+  if (!toast) return;
+  const left = toast.until - performance.now();
+  if (left <= 0) { toast = null; return; }
+  ctx.globalAlpha = Math.min(1, left / 400);
+  ctx.font = "bold 16px sans-serif";
+  const tw = ctx.measureText(toast.msg).width, w = tw + 40, h = 42, x = (canvas.width - w) / 2, y = 60;
+  ctx.fillStyle = "rgba(10,16,22,.93)"; roundRect(x, y, w, h, 10); ctx.fill();
+  ctx.strokeStyle = toast.color; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText(toast.msg, canvas.width / 2, y + h / 2);
+  ctx.globalAlpha = 1;
 }
 
 function drawBoard() {
@@ -654,9 +672,14 @@ function drawHUD() {
   ctx.fillStyle = "#fff"; ctx.font = "bold 18px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
   ctx.fillText(p.name[0], x+26, y+28);
   ctx.fillStyle = "#e8eef2"; ctx.font = "bold 14px sans-serif"; ctx.textAlign = "left"; ctx.fillText(p.name, x+52, y+20);
-  ctx.font = "15px serif";
-  let hs = ""; for (let i=0;i<p.maxHp;i++) hs += i<p.hp ? "❤" : "🤍"; ctx.fillText(hs, x+52, y+40);
-  ctx.font = "17px serif"; ctx.fillText(p.items.map(it => ITEMS[it].icon).join(" ") || "—", x+12, y+66);
+  // сердца: только красные по числу ХП (исчезают при уроне, появляются при лечении)
+  ctx.font = "bold 17px sans-serif"; ctx.fillStyle = "#e8455a";
+  let hs = ""; for (let i = 0; i < p.hp; i++) hs += "♥ ";
+  ctx.fillText(hs.trim() || "—", x+52, y+40);
+  ctx.fillStyle = "#e8eef2"; ctx.font = "17px serif"; ctx.textAlign = "left";
+  ctx.fillText(p.items.map(it => ITEMS[it].icon).join(" ") || "—", x+12, y+66);
+  ctx.font = "12px sans-serif"; ctx.fillStyle = "#9fb0bd"; ctx.textAlign = "right";
+  ctx.fillText(`🎒 ${p.items.length}/${INV_MAX}`, x+w-10, y+66);
   ctx.font = "13px sans-serif"; ctx.fillStyle = "#cdd8e0"; ctx.textAlign = "left";
   ctx.fillText(`Цель: ${team.keys ? "🔑✓" : "🔑✗"}  ${team.gas ? "⛽✓" : "⛽✗"} → 🚗`, x+12, y+88);
   // ростер
@@ -747,12 +770,17 @@ function drawSpinner() {
   if (!spin.done) ctx.fillText(spin.spinning ? "..." : "КРУТИТЬ", cx, cy);
   if (!spin.spinning && !spin.done)
     addButton(cx - R*.22, cy - R*.22, R*.44, R*.44, "", () => { spin.spinning = true; spin.t = 0; }, null);
-  // спецсредства на выбор в бою
+  // спецсредства + побег на выбор в бою
   if (spin.mode === "combat" && !spin.spinning && !spin.done) {
-    const p = active(); let bx = cx - 150;
-    for (const sp of ["dart","lasso"]) if (p.items.includes(sp)) {
-      addButton(bx, cy + R + 6, 140, 28, `${ITEMS[sp].icon} ${ITEMS[sp].name}`, () => useSpecial(sp), "#8a5a2a");
-      bx += 150;
+    const p = active();
+    const opts = [];
+    for (const sp of ["dart","lasso"]) if (p.items.includes(sp)) opts.push(["item", sp]);
+    opts.push(["flee", null]);
+    let bw = 140, gap = 10, bx = cx - (opts.length * bw + (opts.length-1) * gap) / 2;
+    for (const [t, sp] of opts) {
+      if (t === "item") addButton(bx, cy + R + 6, bw, 28, `${ITEMS[sp].icon} ${ITEMS[sp].name}`, () => useSpecial(sp), "#8a5a2a");
+      else addButton(bx, cy + R + 6, bw, 28, "🏃 Сбежать", fleeCombat, "#3a6b78");
+      bx += bw + gap;
     }
   }
   // результат броска
